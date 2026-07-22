@@ -1,0 +1,14 @@
+[project]
+name = "tachikoma"
+version = "0.1.0"
+description = "タチコマ型同居人ロボット ― MuJoCo シミュレーション (Phase 1)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mujoco>=3.10.0",
+    "numpy>=2.4.6",
+]
+
+[tool.uv]
+# 社内 TLS 環境向け: システム証明書ストアを使う (毎回 --native-tls を打たない)
+native-tls = true
