@@ -1,0 +1,47 @@
+# ============================================================
+# ロボットアセットの Git 管理ルール
+#   robot/<robot_name>/{urdf,meshes,launch,config}/ を想定
+# ============================================================
+
+# ------------------------------------------------------------
+# メッシュ / CAD 由来アセット → Git LFS
+#   いずれも CAD からのエクスポート成果物であり、
+#   差分に意味がない・サイズが大きくなるため LFS に格納する。
+#   .gltf は JSON だがバッファが base64 埋め込みで実質バイナリ。
+# ------------------------------------------------------------
+*.stl  filter=lfs diff=lfs merge=lfs -text
+*.STL  filter=lfs diff=lfs merge=lfs -text
+*.gltf filter=lfs diff=lfs merge=lfs -text
+*.glb  filter=lfs diff=lfs merge=lfs -text
+*.bin  filter=lfs diff=lfs merge=lfs -text
+*.dae  filter=lfs diff=lfs merge=lfs -text
+*.obj  filter=lfs diff=lfs merge=lfs -text
+*.mtl  filter=lfs diff=lfs merge=lfs -text
+*.ply  filter=lfs diff=lfs merge=lfs -text
+*.fbx  filter=lfs diff=lfs merge=lfs -text
+*.3mf  filter=lfs diff=lfs merge=lfs -text
+*.step filter=lfs diff=lfs merge=lfs -text
+*.stp  filter=lfs diff=lfs merge=lfs -text
+*.iges filter=lfs diff=lfs merge=lfs -text
+*.igs  filter=lfs diff=lfs merge=lfs -text
+
+# MuJoCo コンパイル済みモデル
+*.mjb  filter=lfs diff=lfs merge=lfs -text
+
+# テクスチャ(メッシュに付随する場合のみ。docs/ の画像は下で除外)
+*.ktx2 filter=lfs diff=lfs merge=lfs -text
+
+# ------------------------------------------------------------
+# ロボット記述ファイル → 通常の Git 管理(テキスト、LF 統一)
+#   手で編集する / 差分レビューしたいファイル群。
+# ------------------------------------------------------------
+*.urdf   text eol=lf
+*.xacro  text eol=lf
+*.sdf    text eol=lf
+*.world  text eol=lf
+*.launch text eol=lf
+*.xml    text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.py     text eol=lf
+*.md     text eol=lf

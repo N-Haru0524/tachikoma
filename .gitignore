@@ -8,7 +8,6 @@ __pycache__/
 # MuJoCo
 *.mjb
 
-# CAD由来アセット(Onshape出力のURDF/glTF等。リポジトリには含めない=ローカル管理)
+# CAD由来アセット(sim/ 配下の Onshape 出力ワークエリアのみローカル管理)
+# ※ robot/ 配下の URDF / メッシュは Git(+LFS)で管理する
 sim/robot/
-*.urdf
-*.gltf
