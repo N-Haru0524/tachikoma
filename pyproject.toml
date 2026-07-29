@@ -9,6 +9,15 @@ dependencies = [
     "numpy>=2.4.6",
 ]
 
+[project.optional-dependencies]
+# 視覚メッシュの glTF→OBJ 変換(一度だけ)に必要。実行時は不要なので optional。
+#   uv run --extra mesh python -c "import sys;sys.path.insert(0,'sim');import urdf_model;urdf_model.ensure_meshes()"
+# 生成した sim/robot/.../meshes/obj/*.obj をコミットすれば以後この extra は不要。
+mesh = [
+    "trimesh>=4.0",
+    "pygltflib>=1.16",
+]
+
 [tool.uv]
 # 社内 TLS 環境向け: システム証明書ストアを使う (毎回 --native-tls を打たない)
 native-tls = true
