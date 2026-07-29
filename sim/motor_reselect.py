@@ -250,7 +250,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mm", type=int, nargs="+", default=[130, 100, 85])
     ap.add_argument("--Ps", type=float, nargs="+", default=[0.9, 1.1, 1.3])
+    U.add_robot_arg(ap)
     args = ap.parse_args()
+    U.set_robot(args.robot)
 
     scales = {mm: LEG_MM.get(mm) for mm in args.mm}
     for mm, s in scales.items():

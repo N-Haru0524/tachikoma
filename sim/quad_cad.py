@@ -63,7 +63,8 @@ LEGS = [
     ("LB", -1, +1, True),
 ]
 
-MESH_DIR = os.path.join(os.path.dirname(__file__), "robot", "test_tachikoma", "meshes", "obj")
+MESH_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                        "robot", "test_robot", "meshes", "obj")
 
 # feet 視覚メッシュの配置(脚 body ローカル). 脚は -z 方向に伸び、脚先ホイールは z=-0.115。
 # feet.obj はネイティブで長軸 +z(0〜0.11)。これを脚の -z(下向き)へ向けると足先がホイールへ

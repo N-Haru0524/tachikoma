@@ -257,7 +257,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tanks", type=int, nargs="+", default=[580, 314, 280, 250])
     ap.add_argument("--splay", type=float, default=STAND_SPLAY)
+    U.add_robot_arg(ap)
     args = ap.parse_args()
+    U.set_robot(args.robot)
     levels = [(next((L[0] for L in LEVELS if abs(L[1] * 1000 - t) < 1), "?"), t / 1000.0)
               for t in args.tanks]
 

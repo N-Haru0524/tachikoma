@@ -8,6 +8,5 @@ __pycache__/
 # MuJoCo
 *.mjb
 
-# CAD由来アセット(sim/ 配下の Onshape 出力ワークエリアのみローカル管理)
-# ※ robot/ 配下の URDF / メッシュは Git(+LFS)で管理する
-sim/robot/
+# 生成物: build() が毎回生成する MuJoCo 用 URDF(派生物なのでコミットしない)
+*_mjc.urdf

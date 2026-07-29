@@ -24,16 +24,76 @@ URDF に無い要素だけをプログラムで足す(向きの曖昧さが無�
     uv run python sim/urdf_model.py            # 生成・検証(質量/可動域/対称)
     uv run python sim/urdf_model.py render      # オフスクリーン描画を PNG 保存
 """
+import argparse
+import glob
 import os
-import sys
+import re
 import numpy as np
 import mujoco
 
 HERE = os.path.dirname(__file__)
-URDF_SRC = os.path.join(HERE, "robot", "test_tachikoma", "urdf", "test_robot.urdf")
-URDF_MJC = os.path.join(HERE, "robot", "test_tachikoma", "urdf", "test_robot_mjc.urdf")
-MESH_GLTF_DIR = os.path.join(HERE, "robot", "test_tachikoma", "meshes")
-MESH_OBJ_DIR = os.path.join(MESH_GLTF_DIR, "obj")
+ROOT = os.path.dirname(HERE)                          # リポジトリ直下
+ROBOT_ROOT = os.path.join(ROOT, "robot")              # 各ロボットは robot/<name>/ に配置
+DEFAULT_ROBOT = "test_robot"
+
+# 対象ロボットのパス群(set_robot() で切替。build/make_stand/ensure_meshes が参照)。
+# 既定 test_robot で下の set_robot() が初期化する。
+ROBOT_NAME = DEFAULT_ROBOT
+ROBOT_DIR = URDF_SRC = URDF_MJC = MESH_GLTF_DIR = MESH_OBJ_DIR = None
+
+
+def robot_paths(name_or_path=DEFAULT_ROBOT):
+    """ロボット名 or ディレクトリパスから各アセットのパスを解決して dict で返す。
+    ・名前(例 'test_robot')      → robot/<名前>/ を使う
+    ・パス(区切りを含む/実在dir) → それを robot ルートとして使う
+    URDF は urdf/<名前>.urdf を優先。無ければ urdf/ 内の(生成物 *_mjc を除く)最初の *.urdf。
+    meshes は <root>/meshes/、変換 OBJ は <root>/meshes/obj/。"""
+    if os.sep in name_or_path or (os.altsep and os.altsep in name_or_path) \
+            or os.path.isdir(name_or_path):
+        rdir = os.path.abspath(name_or_path)
+        name = os.path.basename(os.path.normpath(rdir))
+    else:
+        name = name_or_path
+        rdir = os.path.join(ROBOT_ROOT, name)
+    udir = os.path.join(rdir, "urdf")
+    src = os.path.join(udir, name + ".urdf")
+    if not os.path.exists(src):
+        cands = [c for c in sorted(glob.glob(os.path.join(udir, "*.urdf")))
+                 if not c.endswith("_mjc.urdf")]
+        if cands:
+            src = cands[0]
+    stem = os.path.splitext(os.path.basename(src))[0]
+    return dict(name=name, dir=rdir, urdf_src=src,
+                urdf_mjc=os.path.join(udir, stem + "_mjc.urdf"),
+                mesh_gltf=os.path.join(rdir, "meshes"),
+                mesh_obj=os.path.join(rdir, "meshes", "obj"))
+
+
+def set_robot(name_or_path=DEFAULT_ROBOT):
+    """対象ロボットを切り替える(モジュールのパス群を再設定して dict を返す)。"""
+    global ROBOT_NAME, ROBOT_DIR, URDF_SRC, URDF_MJC, MESH_GLTF_DIR, MESH_OBJ_DIR
+    p = robot_paths(name_or_path)
+    if not os.path.exists(p["urdf_src"]):
+        avail = sorted(os.path.basename(x) for x in glob.glob(os.path.join(ROBOT_ROOT, "*"))
+                       if os.path.isdir(x) and glob.glob(os.path.join(x, "urdf", "*.urdf")))
+        raise FileNotFoundError(
+            "ロボット '%s' の URDF が見つかりません: %s\n"
+            "  --robot に指定できる robot/ 直下: %s"
+            % (name_or_path, p["urdf_src"], ", ".join(avail) or "(なし)"))
+    ROBOT_NAME, ROBOT_DIR = p["name"], p["dir"]
+    URDF_SRC, URDF_MJC = p["urdf_src"], p["urdf_mjc"]
+    MESH_GLTF_DIR, MESH_OBJ_DIR = p["mesh_gltf"], p["mesh_obj"]
+    return p
+
+
+def add_robot_arg(parser):
+    """argparse パーサに共通の --robot を追加する(全エントリで統一)。"""
+    parser.add_argument("--robot", default=DEFAULT_ROBOT,
+                        help="対象ロボット名(robot/<name>/) or robot ディレクトリのパス [%(default)s]")
+    return parser
+
+
+set_robot(DEFAULT_ROBOT)                              # 既定ロボットでパスを初期化
 
 WHEEL_R = 0.015
 STEP_H = 0.03
@@ -72,18 +132,30 @@ M_ANKLE, M_WHEEL = 0.004, 0.016    # 接地に要る追加体(feet から切り�
 YAW_RANGE = (-0.785, 0.785)
 P_STAND = 1.0            # 公称立位の pitch 振り(鏡像で ±P_STAND)。足首サス軸の算定に使用
 
+# vr2 実車輪(URDF に wheel* リンクを持つ改良版)の車輪ジオメトリ
+WHEEL_R_VR2 = 0.010     # 半径(径 0.02m)
+WHEEL_HW_VR2 = 0.0025   # 半幅(幅 0.005m)
+
+# build() が設定する対象モデル依存マップ(downstream はこれを参照)
+WHEEL_BODIES = {}       # {foot: 車輪 body 名}  vr1='wheel_<foot>' / vr2=URDFの wheel*
+LEG_MAP = None          # vr2 の脚関節マップ {foot:{pitch,yaw,wheel_j,wheel_body,wheel_axis}} / vr1=None
+
 
 def ensure_meshes():
     """glTF→OBJ 変換(無ければ生成)。座標保存のため trimesh force='mesh'。
 
     生成済み OBJ があれば trimesh は不要(=素の `uv run python` で動く)。
     OBJ が無く trimesh も無い場合は、変換方法を明示した分かりやすいエラーを出す。
-    OBJ は派生物なので、リポジトリにコミットしておけば実行時 trimesh 依存が消える。"""
-    need = ["body", "feet", "joint", "tank"]
-    have = os.path.isdir(MESH_OBJ_DIR) and all(
-        os.path.exists(os.path.join(MESH_OBJ_DIR, n + ".obj")) for n in need)
-    if have:
-        return
+    OBJ は派生物なので、リポジトリにコミットしておけば実行時 trimesh 依存が消える。
+
+    変換対象はメッシュ dir 内の *.gltf すべて(名前は決め打ちしない)。ロボットごとに
+    メッシュ構成が違っても(例: vr2 の wheel/pre_joint)取りこぼさない。"""
+    def obj_of(g):
+        return os.path.join(MESH_OBJ_DIR, os.path.splitext(os.path.basename(g))[0] + ".obj")
+    gltfs = sorted(glob.glob(os.path.join(MESH_GLTF_DIR, "*.gltf")))
+    todo = [g for g in gltfs if not os.path.exists(obj_of(g))]
+    if not todo:
+        return                       # 全 gltf 分の obj 済(or gltf 無=committed obj)→ trimesh 不要
     try:
         import trimesh
     except ImportError:
@@ -93,15 +165,13 @@ def ensure_meshes():
             "  次のいずれかで解決してください(プロジェクト環境は汚しません):\n"
             "    (A) 一度だけ変換:  uv run --with trimesh --with pygltflib "
             "python -c \"import sys;sys.path.insert(0,'sim');import urdf_model;urdf_model.ensure_meshes()\"\n"
-            "    (B) 恒久化      :  上記で生成される sim/robot/test_tachikoma/meshes/obj/*.obj を"
+            "    (B) 恒久化      :  上記で生成される robot/test_robot/meshes/obj/*.obj を"
             " git にコミット(以後 trimesh 不要)\n"
             f"  生成先: {MESH_OBJ_DIR}")
     os.makedirs(MESH_OBJ_DIR, exist_ok=True)
-    for n in need:
-        g = os.path.join(MESH_GLTF_DIR, n + ".gltf")
-        if os.path.exists(g):
-            trimesh.load(g, force="mesh").export(os.path.join(MESH_OBJ_DIR, n + ".obj"))
-    print("[urdf_model] glTF→OBJ 変換完了:", MESH_OBJ_DIR)
+    for g in todo:
+        trimesh.load(g, force="mesh").export(obj_of(g))
+    print("[urdf_model] glTF→OBJ 変換完了(%d件): %s" % (len(todo), MESH_OBJ_DIR))
 
 
 def write_sibling_urdf():
@@ -110,7 +180,8 @@ def write_sibling_urdf():
     txt = open(URDF_SRC, encoding="utf-8").read().replace(".gltf", ".obj")
     block = ('<mujoco><compiler discardvisual="false" meshdir="../meshes/obj" '
              'strippath="true" balanceinertia="true" fusestatic="false"/></mujoco>')
-    txt = txt.replace('<robot name="test_robot">', '<robot name="test_robot">\n  ' + block)
+    # ロボット名に依存せず <robot ...> 開始タグ直後へ注入(最初の1箇所)
+    txt = re.sub(r'(<robot\b[^>]*>)', lambda mm: mm.group(1) + '\n  ' + block, txt, count=1)
     open(URDF_MJC, "w", encoding="utf-8").write(txt)
 
 
@@ -128,6 +199,104 @@ def _foot_tip_local(m, d, feet_name):
     return np.array([0.108, -0.044, 0.019])
 
 
+def _hinge_on(m, bid):
+    """body bid を子とする hinge 関節 id(無ければ None)。"""
+    for j in range(m.njnt):
+        if m.jnt_bodyid[j] == bid and m.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE:
+            return j
+    return None
+
+
+def _derive_legs(m, d):
+    """URDF に実車輪(feet* の子 = wheel* リンク)がある改良版(vr2)なら、脚ごとに
+    {pitch, yaw, wheel_j, wheel_body, wheel_axis} を **構造から** 導出して返す。
+    無ければ None(=vr1 構造: 車輪は後付け)。関節名の付番はモデル間で変わるため、
+    固定リンク名(feet*/wheel*)と world 軸で判定する: hinge が world で鉛直に近い方=yaw
+    (操舵)、そうでない方=pitch(脚振り)。"""
+    legs = {}
+    for f in FEET:
+        fbid = m.body(f).id
+        wbid = next((i for i in range(m.nbody)
+                     if m.body_parentid[i] == fbid and m.body(i).name.startswith("wheel")), None)
+        if wbid is None:
+            return None                                   # vr1(URDFに車輪なし)
+        jf, jp, jw = _hinge_on(m, fbid), _hinge_on(m, m.body_parentid[fbid]), _hinge_on(m, wbid)
+        if None in (jf, jp, jw):
+            return None
+
+        def waxis(j):
+            R = d.body(m.jnt_bodyid[j]).xmat.reshape(3, 3)
+            return R @ m.jnt_axis[j]
+        af, ap = waxis(jf), waxis(jp)
+        yaw_j, pitch_j = (jf, jp) if abs(af[2]) > abs(ap[2]) else (jp, jf)
+        legs[f] = dict(pitch=m.joint(pitch_j).name, yaw=m.joint(yaw_j).name,
+                       wheel_j=m.joint(jw).name, wheel_body=m.body(wbid).name,
+                       wheel_axis=[float(x) for x in m.jnt_axis[jw]])
+    return legs
+
+
+def _build_vr2(legs, tank_mass=None, tank_y=None):
+    """vr2: URDF の実車輪(wheel*)に衝突円柱(径0.02m/幅0.005m)を付与し、URDF の車輪関節で
+    駆動する。球車輪・足首サスの後付けはしない(車輪は CAD 実物を置換使用)。"""
+    spec = mujoco.MjSpec.from_file(URDF_MJC)
+    if tank_mass is not None or tank_y is not None:                # tank 上書き(共通)
+        tb = spec.body("tank")
+        if tank_mass is not None:
+            sc = tank_mass / URDF_TANK_MASS
+            tb.mass = tank_mass; tb.fullinertia = [v * sc for v in URDF_TANK_I]
+        if tank_y is not None:
+            p = list(tb.pos); p[1] += (tank_y - URDF_TANK_Y); tb.pos = p
+    spec.body("root").add_freejoint()
+    for g in spec.geoms:                                          # URDF メッシュは視覚専用
+        if g.type == mujoco.mjtGeom.mjGEOM_MESH:
+            g.contype = 0; g.conaffinity = 0
+    pj = {legs[f]["pitch"] for f in FEET}
+    yj = {legs[f]["yaw"] for f in FEET}
+    wj = {legs[f]["wheel_j"] for f in FEET}
+    for j in spec.joints:                                         # 可動域＋armature
+        if j.name in pj:
+            j.range = [-PITCH_ROM, PITCH_ROM]; j.armature = 0.01
+        elif j.name in yj:
+            j.range = list(YAW_RANGE); j.armature = 0.01
+        elif j.name in wj:
+            j.armature = 0.003; j.damping[0] = 0.01
+    for f in FEET:                                                # 実車輪へ衝突円柱を付与
+        wb = spec.body(legs[f]["wheel_body"])
+        for mg in list(wb.geoms):                                 # 車輪の視覚メッシュは削除
+            if mg.type == mujoco.mjtGeom.mjGEOM_MESH:
+                spec.delete(mg)
+        a = np.array(legs[f]["wheel_axis"], float); a /= (np.linalg.norm(a) + 1e-9)
+        g = wb.add_geom(name="wheelg_%s" % f, type=mujoco.mjtGeom.mjGEOM_CYLINDER)
+        g.size = [WHEEL_R_VR2, WHEEL_HW_VR2, 0]; g.pos = [0, 0, 0]
+        g.quat = _axis_to_quat(a)                                 # 局所 z を車輪スピン軸へ
+        g.contype = 1; g.conaffinity = 1
+        g.friction = [1.6, 0.02, 0.001]
+        g.solref = [0.01, 1]; g.solimp = [0.9, 0.98, 0.001, 0.5, 2]
+        g.rgba = [0.15, 0.15, 0.18, 1]
+        if wb.mass < 0.005:                                       # 軽すぎ発散対策の最低質量
+            wb.mass = M_WHEEL; wb.fullinertia = [2e-6, 3e-6, 2e-6, 0, 0, 0]
+    for f in FEET:                                                # アクチュエータ(foot名で統一)
+        a = spec.add_actuator(name="pitchpos_%s" % f, target=legs[f]["pitch"],
+                              trntype=mujoco.mjtTrn.mjTRN_JOINT)
+        a.gaintype = mujoco.mjtGain.mjGAIN_FIXED; a.gainprm[0] = 60
+        a.biastype = mujoco.mjtBias.mjBIAS_AFFINE; a.biasprm[1] = -60; a.biasprm[2] = -3
+        a.ctrlrange = [-PITCH_ROM, PITCH_ROM]; a.forcerange = [-20, 20]
+    for f in FEET:
+        a = spec.add_actuator(name="yawpos_%s" % f, target=legs[f]["yaw"],
+                              trntype=mujoco.mjtTrn.mjTRN_JOINT)
+        a.gaintype = mujoco.mjtGain.mjGAIN_FIXED; a.gainprm[0] = 20
+        a.biastype = mujoco.mjtBias.mjBIAS_AFFINE; a.biasprm[1] = -20; a.biasprm[2] = -1
+        a.ctrlrange = list(YAW_RANGE); a.forcerange = [-4, 4]
+    for f in FEET:
+        a = spec.add_actuator(name="wheeldrv_%s" % f, target=legs[f]["wheel_j"],
+                              trntype=mujoco.mjtTrn.mjTRN_JOINT)
+        a.gaintype = mujoco.mjtGain.mjGAIN_FIXED; a.gainprm[0] = 1.5
+        a.biastype = mujoco.mjtBias.mjBIAS_AFFINE; a.biasprm[2] = -1.5
+        a.ctrlrange = [-60, 60]; a.forcerange = [-1.5, 1.5]
+    m = spec.compile(); d = mujoco.MjData(m); mujoco.mj_forward(m, d)
+    return m, d
+
+
 def build(ankle_stiff=2500, ankle_damp=40, ankle_axis="vertical", leg_scale=1.0,
           tank_mass=None, tank_y=None):
     """URDF 直読み + 要素追加でモデル(MjModel, MjData)を返す。
@@ -137,9 +306,23 @@ def build(ankle_stiff=2500, ankle_damp=40, ankle_axis="vertical", leg_scale=1.0,
     tank_mass : tank 質量[kg]を上書き(None=URDF実値580g)。案B 軽量化の検証用。
                 慣性は質量比で縮尺。総重量は (1.0265 + tank_mass) 近傍になる。
     tank_y    : tank 取付 y[m]を上書き(None=−0.07)。偏重心を中心へ寄せる検証用。"""
+    global WHEEL_BODIES, LEG_MAP
     ensure_meshes()
     write_sibling_urdf()
 
+    # 改良版(vr2: URDF に実車輪あり)なら、その車輪を置換使用する経路へ分岐
+    _m0 = mujoco.MjModel.from_xml_path(URDF_MJC)
+    _d0 = mujoco.MjData(_m0); mujoco.mj_forward(_m0, _d0)
+    legs = _derive_legs(_m0, _d0)
+    if legs is not None:
+        m, d = _build_vr2(legs, tank_mass=tank_mass, tank_y=tank_y)
+        WHEEL_BODIES = {f: legs[f]["wheel_body"] for f in FEET}
+        LEG_MAP = legs
+        return m, d
+    WHEEL_BODIES = {f: "wheel_%s" % f for f in FEET}
+    LEG_MAP = None
+
+    # ---- 以降 vr1(URDF に車輪なし)経路: 車輪・足首サスをコードで後付け ----
     # 第1パス: 足先位置＋(公称立位での)各脚の鉛直軸を測るためコンパイル
     m0 = mujoco.MjModel.from_xml_path(URDF_MJC)
     d0 = mujoco.MjData(m0); mujoco.mj_forward(m0, d0)
@@ -298,8 +481,10 @@ def _axis_to_quat(axis):
     q = np.array([1 + c, *v]); return list(q / np.linalg.norm(q))
 
 
-def main():
+def main(robot=DEFAULT_ROBOT):
+    set_robot(robot)
     m, d = build()
+    print("ロボット: %s  (%s)" % (ROBOT_NAME, URDF_SRC))
     print("URDF 直読みモデル: nbody=%d njnt=%d nu=%d nmesh=%d ngeom=%d" %
           (m.nbody, m.njnt, m.nu, m.nmesh, m.ngeom))
     print("総質量 = %.4f kg (URDF実値 目標 1.6065)" % sum(m.body_mass))
@@ -323,6 +508,6 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "render":
-        pass
-    main()
+    ap = argparse.ArgumentParser(description="URDF直読み4脚モデルの生成・検証")
+    add_robot_arg(ap)
+    main(ap.parse_args().robot)

@@ -11,7 +11,7 @@ URDF直読み4脚(立位)で、案(b)の単隅リフト挙動を可視化する�
 
 局面: STAND(4輪) → LIFT(前脚上げ→対角抜け) → HOLD(段へ運ぶ想定) → BACK(戻して回復)。
 """
-import sys
+import argparse
 import time
 import numpy as np
 import mujoco
@@ -20,11 +20,14 @@ import urdf_model as U
 from phase2a_urdf import _lead_leg, _lift_pitch, _tilt
 from quad_stability import leg_normal_force
 
+# 総重量1.606kg(URDF実値)＋柔らかい足首サス(2500)では、P≲0.7 の高め立位は
+# 起立時に横倒れ→天地逆になる(要 P≳0.8 で安定。旧 P=0.6/0.4 は1.3kg時代の値)。
 PRESETS = {
-    "recommended": dict(splay=0.45, P=0.6, lift_time=0.30),
-    "fast": dict(splay=0.20, P=0.4, lift_time=0.15),
+    "recommended": dict(splay=0.45, P=0.8, lift_time=0.30),
+    "fast": dict(splay=0.20, P=0.8, lift_time=0.15),
 }
-SEG = 2.0
+SEG = 2.0            # LIFT / HOLD / BACK 各局面の秒数
+STAND_SEG = 5.0      # 初期姿勢(STAND)の表示秒数(--stand で変更可)
 
 
 def _setup(preset):
@@ -38,17 +41,22 @@ def _setup(preset):
     return m, d, A, stance, yaw_ctrl, lead, lift_target, p["lift_time"]
 
 
+def cycle_len():
+    return STAND_SEG + 3 * SEG
+
+
 def _phase_ctrl(t, stance, lead, lift_target, lift_time):
-    ph = t % (4 * SEG)
-    if ph < SEG:
+    ph = t % cycle_len()
+    if ph < STAND_SEG:                                  # 初期姿勢(長め)
         return stance[lead], "STAND  4脚で立つ"
-    elif ph < 2 * SEG:
-        a = min(1.0, (ph - SEG) / lift_time)
+    ph -= STAND_SEG
+    if ph < SEG:
+        a = min(1.0, ph / lift_time)
         return stance[lead] + a * (lift_target - stance[lead]), "LIFT   前脚上げ→対角抜け(接地2輪)"
-    elif ph < 3 * SEG:
+    elif ph < 2 * SEG:
         return lift_target, "HOLD   滞空(段へ足を運ぶ想定)"
     else:
-        a = min(1.0, (ph - 3 * SEG) / lift_time)
+        a = min(1.0, (ph - 2 * SEG) / lift_time)
         return lift_target + a * (stance[lead] - lift_target), "BACK   足を戻す→回復"
 
 
@@ -57,7 +65,7 @@ def run_headless(preset="recommended"):
     dt = m.opt.timestep
     last = None
     peak = 0.0
-    for k in range(int(4 * SEG / dt)):
+    for k in range(int(cycle_len() / dt)):
         t = k * dt
         p, tag = _phase_ctrl(t, stance, lead, lift_target, lt)
         for f in U.FEET:
@@ -96,8 +104,17 @@ def main(preset="recommended"):
 
 
 if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else "recommended"
-    if arg == "headless":
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mode", nargs="?", default="recommended",
+                    help="プリセット (%s) または headless [recommended]" % "/".join(PRESETS))
+    ap.add_argument("--stand", type=float, default=STAND_SEG,
+                    help="初期姿勢(STAND)の表示秒数 [%(default)s]")
+    U.add_robot_arg(ap)
+    args = ap.parse_args()
+    U.set_robot(args.robot)
+    STAND_SEG = args.stand
+    if args.mode == "headless":
         run_headless("recommended"); print(); run_headless("fast")
     else:
-        main(arg if arg in PRESETS else "recommended")
+        main(args.mode if args.mode in PRESETS else "recommended")

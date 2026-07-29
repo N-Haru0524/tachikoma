@@ -154,7 +154,9 @@ def main():
     ap.add_argument("--Ps", type=float, nargs="+", default=[0.4, 0.6, 0.8])
     ap.add_argument("--lifts", type=float, nargs="+", default=[0.15, 0.30])
     ap.add_argument("--csv", default=None)
+    U.add_robot_arg(ap)
     args = ap.parse_args()
+    U.set_robot(args.robot)
 
     log = [] if args.csv else None
     rows = []

@@ -11,7 +11,7 @@ phase2a_stepclimb の核心(tank側前脚 F_1 の持ち上げ可否)を可視化
     uv run python sim/phase2a_stepclimb_viewer.py current       # 現状(転倒)
     uv run python sim/phase2a_stepclimb_viewer.py headless      # 画面なし数値検証
 """
-import sys
+import argparse
 import time
 import numpy as np
 import mujoco
@@ -97,8 +97,13 @@ def main(preset="recommended"):
 
 
 if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else "recommended"
-    if arg == "headless":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", nargs="?", default="recommended",
+                    help="プリセット (%s) または headless [recommended]" % "/".join(PRESETS))
+    U.add_robot_arg(ap)
+    args = ap.parse_args()
+    U.set_robot(args.robot)
+    if args.mode == "headless":
         run_headless("recommended"); run_headless("current")
     else:
-        main(arg if arg in PRESETS else "recommended")
+        main(args.mode if args.mode in PRESETS else "recommended")
